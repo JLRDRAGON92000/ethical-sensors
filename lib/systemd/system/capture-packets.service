@@ -1,0 +1,14 @@
+[Unit]
+Description=Capture packets with airodump-ng
+After=network-online.target monitor-config.service
+Wants=network-online.target
+Requires=monitor-config.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/capture_packets
+KillMode=process
+WorkingDirectory=/var/captures
+
+[Install]
+WantedBy=multi-user.target

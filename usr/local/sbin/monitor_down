@@ -1,0 +1,21 @@
+#!/bin/sh -e
+#
+# monitor_down: Put the monitor device back in station mode.
+
+NET_DEVICES="/sys/class/net"
+MONITOR_SAVE="/active_monitor"
+
+if [ -f "$MONITOR_SAVE" ]
+then
+	mon_name=$(cat "$MONITOR_SAVE")
+	airmon-ng stop $mon_name
+	if [ -h "$NET_DEVICES/$mon_name" ]
+	then
+		printf "failed to disable monitor %s (monitor still detected)" "$mon_name"
+		exit 1
+	fi
+else
+	echo "no monitor was specified - start one with monitor_up"
+fi
+
+exit 0

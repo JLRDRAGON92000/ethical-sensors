@@ -1,0 +1,20 @@
+[Unit]
+Description=Configure airmon-ng device
+ConditionFileIsExecutable=/usr/local/sbin/monitor_up
+Wants=network.target
+# Monitor must be configured before dhcpcd and wpa_supplicant
+# start interfering with the wireless cards
+# (dhcpcd is set to ignore interfaces ending in "mon")
+Before=network.target networking.service dhcpcd.service wpa_supplicant.service
+After=systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/monitor_up
+ExecStop=/usr/local/sbin/monitor_down
+TimeoutSec=30
+RemainAfterExit=yes
+GuessMainPID=no
+
+[Install]
+WantedBy=multi-user.target

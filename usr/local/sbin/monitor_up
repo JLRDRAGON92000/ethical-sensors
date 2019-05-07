@@ -1,0 +1,44 @@
+#!/bin/sh -e
+#
+# monitor_up: Find and bring up the monitor device.
+
+# we will make a maximum of this many trips through the device list
+N_PASSES_MAX=100
+
+NET_DEVICES="/sys/class/net"
+MONITOR_DEV="$(cat /monitor.txt)"
+MONITOR_SAVE="/active_monitor"
+ADDRESS_PATH="address"
+
+printf "looking for monitor at %s...\n" "$MONITOR_DEV"
+
+# dash-friendly for loop
+N_PASSES=0
+while [ $N_PASSES -lt $N_PASSES_MAX ]
+do
+	for NET_DEV in "$NET_DEVICES"/*
+	do
+		netdev_name=$(basename "$NET_DEV")
+		hwaddr=$(cat "$NET_DEV/$ADDRESS_PATH")
+		if [ "$hwaddr" = "$MONITOR_DEV" ]
+		then
+			printf "monitor found with name %s, activating\n" "$netdev_name"
+			ifconfig "$netdev_name" down
+			airmon-ng start "$netdev_name"
+			if [ ! -h "${NET_DEV}mon" ]; then
+				printf "failed to bring up monitor (monitor not detected)"
+				exit 1
+			else
+				echo -n "${netdev_name}mon" >"$MONITOR_SAVE"
+				exit 0
+			fi
+#		else
+#			printf "interface %s is not the monitor\n" "$netdev_name"
+		fi
+
+	done
+	N_PASSES=$(($N_PASSES+1))
+done
+
+printf "monitor not found in %s passes" "$N_PASSES_MAX"
+exit 0

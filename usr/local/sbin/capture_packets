@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+
+# capture_packets: exactly what it says on the tin, uses airodump-ng to capture
+# and aggregate AP and station information
+
+from subprocess import Popen, DEVNULL
+from time import sleep
+from http.client import HTTPSConnection
+from signal import signal, SIGTERM, SIGHUP
+from re import fullmatch, IGNORECASE
+from datetime import datetime, timedelta
+import os
+import csv
+import json
+
+# Config section
+config = {
+    "sensor_no": 1,
+    "monitor_file": "/active_monitor",
+    "csv_prefix": "utexas-airodump",
+    "csv_suffix": "-01.csv",
+
+    "quantum_secs": 11,
+    "ageoff_limit": 60,
+    "filter_essid": "utexas",
+    "filter_chans": None,
+
+    "db_hostname": "cachemeinthegdc.herokuapp.com",
+    "db_endpoint": "/api/post_data",
+    "auth_token": "<ADD TOKEN HERE>"
+}
+# End of config section
+
+
+def is_mac_like(s):
+    return fullmatch("[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}",
+            s, flags=IGNORECASE) is not None
+
+def parse_data_for_upload(csv_name):
+    time_now = datetime.now()
+    ageoff_ago = timedelta(seconds=config["ageoff_limit"])
+    # stage 1: get the data out of the CSV
+    csv_rows = []
+    stations = []
+    with open(csv_name) as csv_f:
+        reader = csv.reader(csv_f)
+        for row in reader:
+            csv_rows.append([str(d).strip() for d in row])
+
+    # stage 2: separate AP and STA sections
+    # AP rows have 15 elements; STA rows have only 7
+    for row in csv_rows:
+        if len(row) == 15:
+            # AP row: BSSID, first seen, last seen, channel, speed,
+            # security, crypto, auth, power (-1 if unknown), beacons,
+            # IVs, LAN IP (if known), ESSID length, ESSID, key (if known)
+            # excluding the header row
+            pass
+        elif len(row) == 7:
+            # STA row: MAC, first seen, last seen, power (-1 if unknown),
+            # packets, BSSID (or "(not associated)"), probed ESSIDs
+            # excluding the header row
+            if is_mac_like(row[0]):
+                last_seen = None
+                try:
+                    last_seen = datetime.strptime(row[2], "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    print("[WARN] discarding", row[0], "due to malformed timestamp")
+                    continue
+                if last_seen > (time_now - ageoff_ago):
+                    stations.append({
+                        "mac": row[0],
+                        "last_seen": row[2],
+                        "power": row[3],
+                        "bssid": row[5],
+                        "probes": row[6]
+                    })
+                else:
+                    print("[TRACE] discarding", row[0], "last seen at", str(last_seen))
+    return {"sensor": config["sensor_no"], "sta": stations}
+
+def get_monitor_name(monitor_file):
+    monitor_file_io = open(monitor_file)
+    monitor_name_str = monitor_file_io.read(None)
+    monitor_file_io.close()
+    return monitor_name_str
+
+def get_chans_option(filter_chans):
+    chans_optstring = ""
+    if filter_chans is not None:
+        chans_opstring = ",".join([str(ch_no) for ch_no in filter_chans])
+    return chans_optstring
+
+def signal_handler(sig, frame):
+    if airodump_process is not None:
+        airodump_process.terminate()
+    os.remove(config["csv_prefix"] + config["csv_suffix"])
+    print("[INFO] signal", sig, "received, terminating application")
+    exit(0)
+
+
+airodump_process = None
+
+if __name__ == "__main__":
+    signal(SIGTERM, signal_handler)
+    signal(SIGHUP, signal_handler)
+
+    monitor_name = get_monitor_name(config["monitor_file"])
+    write_option = "-w"
+    write_arg = config["csv_prefix"]
+    essid_option = config["filter_essid"] is not None and "-N" or None
+    essid_arg = config["filter_essid"] or ""
+    chans_option = config["filter_chans"] is not None and "-c" or None
+    chans_arg = get_chans_option(config["filter_chans"])
+
+    csv_name = config["csv_prefix"] + config["csv_suffix"]
+
+    airodump_cmdline = [
+        "airodump-ng",
+        "--output-format", "csv",
+        write_option, write_arg
+    ]
+    if essid_option is not None:
+        airodump_cmdline += [essid_option, essid_arg]
+    if chans_option is not None:
+        airodump_cmdline += [chans_option, chans_arg]
+    
+    airodump_cmdline += [monitor_name]
+
+    try:
+        try:
+            os.remove(csv_name)
+            print("[INFO] CSV exists, removing it")
+        except FileNotFoundError:
+            print("[INFO] No existing CSV present")
+
+        print("[INFO] starting airodump-ng")
+        airodump_process = Popen(airodump_cmdline, stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL)
+        print("[INFO] airodump-ng started as process", airodump_process.pid)
+
+        while True:
+            sleep(config["quantum_secs"])
+
+            json_tree = None
+            print("[INFO] quantum ended, submitting data")
+            try:
+                data_tree = parse_data_for_upload(csv_name)
+                json_tree = json.dumps(data_tree)
+            except Exception as ex:
+                print("[ERROR] failed to parse data:")
+                print("[ERROR]", str(ex))
+                continue
+
+            # turn this on or off to control posts
+            if True:
+                try:
+                    post = HTTPSConnection(config["db_hostname"])
+                    post.request("POST", config["db_endpoint"],
+                            headers={"Content-Type": "application/json", "token": config["auth_token"]}, body=json_tree)
+                    answer = post.getresponse()
+                    if (answer.status != 200):
+                        print("[ERROR] failed to post data:", answer.status, answer.reason)
+                    post.close()
+                except Exception as ex:
+                    print("[ERROR] failed to post data: failure with exception:")
+                    print("[ERROR]", str(ex))
+
+            sleep(0.5)
+    except KeyboardInterrupt:
+        # clean up
+        signal_handler(2, None)
+
